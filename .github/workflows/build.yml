@@ -17,7 +17,7 @@ jobs:
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           mkdir -p out
           xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
-            -fobjc-arc -dynamiclib -framework Foundation \
+            -fobjc-arc -dynamiclib -framework Foundation -framework UIKit \
             -install_name @rpath/NFBExtras.dylib -o out/NFBExtras.dylib NFBExtras.m
           codesign -f -s - out/NFBExtras.dylib
           file out/NFBExtras.dylib
