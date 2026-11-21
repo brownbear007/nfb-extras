@@ -130,6 +130,29 @@ static void NFBStopCollapse(void) {
     method_setImplementation(pan, imp_implementationWithBlock(^(id self, id gesture) {}));
 }
 
+// 6. X's bars follow the scroll view each screen reports through xnav_contentScrollView (TFNDataViewController
+//    for every timeline, and a few others). Reporting none leaves nothing for the collapse to follow, so the
+//    tab bar pill and the top bar stay as they are. Classes found in T1Twitter and XServiceLibraries (12.39).
+static BOOL unfollowDone = NO;
+static void NFBStopFollowing(void) {
+    if (unfollowDone) return;
+    SEL ask = sel_registerName("xnav_contentScrollView");
+    NSArray *names = @[@"TFNDataViewController", @"T1TweetComposeViewController", @"T1ProfileSegmentedFollowingViewController",
+                       @"T1StandardSpaceViewController", @"T1MuteListTabViewController", @"T1BlockListTabViewController",
+                       @"T1WebViewController", @"T1TaggingViewController", @"T1LegacyResizableHeaderContainerViewController",
+                       @"_TtC32TwitterHomeFeatureImplementation35HomeTimelineContainerViewController",
+                       @"T1ConversationContainerViewController"];
+    BOOL any = NO;
+    for (NSString *name in names) {
+        Class cls = objc_getClass(name.UTF8String);
+        Method m = cls ? class_getInstanceMethod(cls, ask) : NULL;
+        if (!m) continue;
+        method_setImplementation(m, imp_implementationWithBlock(^id(id self) { return nil; }));
+        any = YES;
+    }
+    if (any) unfollowDone = YES;
+}
+
 __attribute__((constructor)) static void NFBExtrasInit(void) {
     @autoreleasepool {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hide_quick_compose"];
@@ -137,6 +160,8 @@ __attribute__((constructor)) static void NFBExtrasInit(void) {
         NFBHookTabBar();
         NFBPinBars();
         NFBStopCollapse();
+        NFBStopFollowing();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBStopFollowing(); });
         dispatch_async(dispatch_get_main_queue(), ^{ NFBStopCollapse(); });
         // X's frameworks may finish loading after this dylib: try again once the app is up.
         dispatch_async(dispatch_get_main_queue(), ^{ NFBPinBars(); });
