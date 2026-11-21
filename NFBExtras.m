@@ -83,11 +83,49 @@ static void NFBHookTabBar(void) {
     }
 }
 
+// 4. X's own navigation (XNAVNavigationController) collapses its bars as a list scrolls, following each
+//    screen's XNAVConfiguration (the iOS tab bar setting above does not reach it). X has a pinned
+//    configuration whose bars never collapse: every screen gets it (method found by LiquidBird, Tiling.x).
+static id NFBPinned(id self, SEL _cmd) {
+    Class configuration = objc_getClass("XNAVConfiguration");
+    return ((id (*)(id, SEL))objc_msgSend)(configuration, sel_registerName("pinnedConfiguration"));
+}
+
+static BOOL pinnedDone = NO;
+static void NFBPinBars(void) {
+    if (pinnedDone) return;
+    Class configuration = objc_getClass("XNAVConfiguration");
+    SEL pinned = sel_registerName("pinnedConfiguration");
+    if (!configuration || !class_getClassMethod(configuration, pinned)) return;
+    pinnedDone = YES;
+    // The standard (collapsing) configuration answers with the pinned one wherever X asks for it.
+    Method standard = class_getClassMethod(configuration, sel_registerName("standardConfiguration"));
+    if (standard) method_setImplementation(standard, (IMP)NFBPinned);
+    // Screens that do not provide a configuration get the collapsing default: give the main ones the pinned one.
+    Protocol *providing = objc_getProtocol("XNAVConfigurationProviding");
+    SEL answer = sel_registerName("xnav_navigationConfiguration");
+    for (NSString *name in @[@"_TtC32TwitterHomeFeatureImplementation35HomeTimelineContainerViewController",
+                             @"T1ConversationContainerViewController"]) {
+        Class screen = objc_getClass(name.UTF8String);
+        if (!screen) continue;
+        Method m = class_getInstanceMethod(screen, answer);
+        if (m) method_setImplementation(m, (IMP)NFBPinned);
+        else {
+            class_addMethod(screen, answer, (IMP)NFBPinned, "@@:");
+            if (providing) class_addProtocol(screen, providing);
+        }
+    }
+}
+
 __attribute__((constructor)) static void NFBExtrasInit(void) {
     @autoreleasepool {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hide_quick_compose"];
         NFBHookCompose();
         NFBHookTabBar();
+        NFBPinBars();
+        // X's frameworks may finish loading after this dylib: try again once the app is up.
+        dispatch_async(dispatch_get_main_queue(), ^{ NFBPinBars(); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBPinBars(); });
         if (!NSClassFromString(kComposeClass)) {
             // The XNavigation framework may load after this dylib: try again once the app is up.
             dispatch_async(dispatch_get_main_queue(), ^{ NFBHookCompose(); });
