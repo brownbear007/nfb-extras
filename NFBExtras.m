@@ -277,8 +277,7 @@ static void NFBShowStatus(void) {
             [window addSubview:label];
         }
         uintptr_t b = xslBase;
-        label.text = [NSString stringWithFormat:@"NFB v8 xsl=%d compose=%d ratio=%d hits=%ld calls=%ld
-callers %lx %lx %lx %lx",
+        label.text = [NSString stringWithFormat:@"NFB v8 xsl=%d compose=%d ratio=%d hits=%ld calls=%ld\ncallers %lx %lx %lx %lx",
                       xslState, NSClassFromString(kComposeClass) != nil, ratioDone, engineHits, offsetCalls,
                       lastCallers[0] ? lastCallers[0] - b : 0, lastCallers[1] ? lastCallers[1] - b : 0,
                       lastCallers[2] ? lastCallers[2] - b : 0, lastCallers[3] ? lastCallers[3] - b : 0];
