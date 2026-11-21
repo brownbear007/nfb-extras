@@ -12,6 +12,9 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <mach-o/dyld.h>
+#import <mach-o/loader.h>
+#import <string.h>
 
 static NSString *const kComposeClass = @"_TtC11XNavigation25TabBarAccessoryButtonView";
 
@@ -185,6 +188,59 @@ static void NFBNoCollapseRatio(void) {
     }));
 }
 
+
+// 8. What really moves X's bars (12.39): XNavigation's CollapseEngine reads the list's contentOffset on every
+//    display-link frame (XServiceLibraries 0x228c328 and 0x228c690) and collapses the tab bar pill and the top
+//    bar as it changes. Those two reads, and only those, now see the list at its top, so the engine keeps
+//    the bars expanded. Everything else (the list itself, the pop gesture) gets the real offset. The sites
+//    are tied to this exact build: nothing happens unless XServiceLibraries' UUID matches.
+static const uint8_t kXSLUUID[16] = {0x9a,0xb7,0x91,0x43,0x6a,0x95,0x39,0xc5,0xb9,0x67,0x34,0x2a,0x90,0x91,0x0b,0x56};
+static uintptr_t engineRead1, engineRead2;
+static IMP originalOffset;
+
+static CGPoint NFBContentOffset(UIScrollView *self, SEL _cmd) {
+    CGPoint offset = ((CGPoint (*)(id, SEL))originalOffset)(self, _cmd);
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    if (caller == engineRead1 || caller == engineRead2) {
+        offset.y = -self.adjustedContentInset.top;
+    }
+    return offset;
+}
+
+static const struct mach_header_64 *NFBImage(const char *suffix) {
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+        const char *name = _dyld_get_image_name(i);
+        size_t n = strlen(name), m = strlen(suffix);
+        if (n >= m && strcmp(name + n - m, suffix) == 0) return (const struct mach_header_64 *)_dyld_get_image_header(i);
+    }
+    return NULL;
+}
+
+static BOOL NFBHasUUID(const struct mach_header_64 *header, const uint8_t *uuid) {
+    const uint8_t *cursor = (const uint8_t *)(header + 1);
+    for (uint32_t i = 0; i < header->ncmds; i++) {
+        const struct load_command *command = (const struct load_command *)cursor;
+        if (command->cmd == LC_UUID) return memcmp(((const struct uuid_command *)command)->uuid, uuid, 16) == 0;
+        cursor += command->cmdsize;
+    }
+    return NO;
+}
+
+static BOOL offsetDone = NO;
+static void NFBFreezeEngineOffset(void) {
+    if (offsetDone) return;
+    const struct mach_header_64 *xsl = NFBImage("/XServiceLibraries.framework/XServiceLibraries");
+    if (!xsl) return;
+    offsetDone = YES;
+    if (!NFBHasUUID(xsl, kXSLUUID)) return;
+    // __TEXT starts at 0 in this build, so an address in the file is the header plus that address.
+    engineRead1 = (uintptr_t)xsl + 0x228c328 + 4;
+    engineRead2 = (uintptr_t)xsl + 0x228c690 + 4;
+    Method m = class_getInstanceMethod([UIScrollView class], @selector(contentOffset));
+    originalOffset = method_getImplementation(m);
+    method_setImplementation(m, (IMP)NFBContentOffset);
+}
+
 __attribute__((constructor)) static void NFBExtrasInit(void) {
     @autoreleasepool {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hide_quick_compose"];
@@ -195,6 +251,8 @@ __attribute__((constructor)) static void NFBExtrasInit(void) {
         NFBStopFollowing();
         NFBNoTabBarCollapse();
         NFBNoCollapseRatio();
+        NFBFreezeEngineOffset();
+        dispatch_async(dispatch_get_main_queue(), ^{ NFBFreezeEngineOffset(); });
         dispatch_async(dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBStopFollowing(); });
