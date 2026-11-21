@@ -6,9 +6,12 @@
 // 2. With Liquid Glass, X's compose "+" is XNavigation.TabBarAccessoryButtonView, which
 //    NeoFreeBird's "Hide Tweet button" (TFNFloatingActionButton) doesn't reach. This keeps
 //    that button, and a glass bubble that holds only it, hidden.
+// 3. The Liquid Glass tab bar shrinks while scrolling (UITabBarController.tabBarMinimizeBehavior). This
+//    keeps it expanded: every tab bar controller is set to "never" and stays there.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 static NSString *const kComposeClass = @"_TtC11XNavigation25TabBarAccessoryButtonView";
 
@@ -47,10 +50,44 @@ static void NFBHookCompose(void) {
     NFBSwizzleHide(cls, @selector(layoutSubviews));
 }
 
+// UITabBarMinimizeBehavior: automatic 0, never 1, onScrollDown 2, onScrollUp 3 (iOS 26).
+static const NSInteger kNever = 1;
+static SEL setMinimize;
+
+static void NFBNeverMinimize(id controller) {
+    if ([controller respondsToSelector:setMinimize]) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(controller, setMinimize, kNever);
+    }
+}
+
+static void NFBHookTabBar(void) {
+    Class cls = [UITabBarController class];
+    setMinimize = NSSelectorFromString(@"setTabBarMinimizeBehavior:");
+    // Whatever X asks for, the bar never minimises.
+    Method set = class_getInstanceMethod(cls, setMinimize);
+    if (set) {
+        IMP original = method_getImplementation(set);
+        method_setImplementation(set, imp_implementationWithBlock(^(id self, NSInteger behavior) {
+            ((void (*)(id, SEL, NSInteger))original)(self, setMinimize, kNever);
+        }));
+    }
+    // And the ones that never ask get it when they appear.
+    SEL appear = @selector(viewWillAppear:);
+    Method m = class_getInstanceMethod(cls, appear);
+    if (m) {
+        IMP original = method_getImplementation(m);
+        method_setImplementation(m, imp_implementationWithBlock(^(id self, BOOL animated) {
+            ((void (*)(id, SEL, BOOL))original)(self, appear, animated);
+            NFBNeverMinimize(self);
+        }));
+    }
+}
+
 __attribute__((constructor)) static void NFBExtrasInit(void) {
     @autoreleasepool {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hide_quick_compose"];
         NFBHookCompose();
+        NFBHookTabBar();
         if (!NSClassFromString(kComposeClass)) {
             // The XNavigation framework may load after this dylib: try again once the app is up.
             dispatch_async(dispatch_get_main_queue(), ^{ NFBHookCompose(); });
