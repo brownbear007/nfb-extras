@@ -117,12 +117,27 @@ static void NFBPinBars(void) {
     }
 }
 
+// 5. What actually collapses X's bars (found in XServiceLibraries): XNavigation.CollapseEngine.ScrollObserver,
+//    whose handlePan: follows the list's pan and collapses the navigation bar and the tab bar pill. It does
+//    nothing now, so the bars stay as they are while scrolling.
+static BOOL collapseDone = NO;
+static void NFBStopCollapse(void) {
+    if (collapseDone) return;
+    Class observer = objc_getClass("_TtCC11XNavigation14CollapseEngine14ScrollObserver");
+    Method pan = observer ? class_getInstanceMethod(observer, sel_registerName("handlePan:")) : NULL;
+    if (!pan) return;
+    collapseDone = YES;
+    method_setImplementation(pan, imp_implementationWithBlock(^(id self, id gesture) {}));
+}
+
 __attribute__((constructor)) static void NFBExtrasInit(void) {
     @autoreleasepool {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hide_quick_compose"];
         NFBHookCompose();
         NFBHookTabBar();
         NFBPinBars();
+        NFBStopCollapse();
+        dispatch_async(dispatch_get_main_queue(), ^{ NFBStopCollapse(); });
         // X's frameworks may finish loading after this dylib: try again once the app is up.
         dispatch_async(dispatch_get_main_queue(), ^{ NFBPinBars(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBPinBars(); });
