@@ -197,12 +197,23 @@ static void NFBNoCollapseRatio(void) {
 static const uint8_t kXSLUUID[16] = {0x9a,0xb7,0x91,0x43,0x6a,0x95,0x39,0xc5,0xb9,0x67,0x34,0x2a,0x90,0x91,0x0b,0x56};
 static uintptr_t engineRead1, engineRead2;
 static IMP originalOffset;
+static volatile long engineHits, offsetCalls;
+static uintptr_t xslBase;
+static int xslState; // 0 not loaded yet, 1 other build, 2 hooked
+static uintptr_t lastCallers[4];
 
 static CGPoint NFBContentOffset(UIScrollView *self, SEL _cmd) {
     CGPoint offset = ((CGPoint (*)(id, SEL))originalOffset)(self, _cmd);
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    offsetCalls++;
     if (caller == engineRead1 || caller == engineRead2) {
+        engineHits++;
         offset.y = -self.adjustedContentInset.top;
+    } else if (caller - xslBase < 0x424c000 && caller != lastCallers[0] && caller != lastCallers[1] &&
+               caller != lastCallers[2] && caller != lastCallers[3]) {
+        // contentOffset readers inside XServiceLibraries, to find the engine if its sites differ.
+        static int next;
+        lastCallers[next++ & 3] = caller;
     }
     return offset;
 }
@@ -232,13 +243,51 @@ static void NFBFreezeEngineOffset(void) {
     const struct mach_header_64 *xsl = NFBImage("/XServiceLibraries.framework/XServiceLibraries");
     if (!xsl) return;
     offsetDone = YES;
-    if (!NFBHasUUID(xsl, kXSLUUID)) return;
+    xslBase = (uintptr_t)xsl;
+    if (!NFBHasUUID(xsl, kXSLUUID)) { xslState = 1; return; }
+    xslState = 2;
     // __TEXT starts at 0 in this build, so an address in the file is the header plus that address.
     engineRead1 = (uintptr_t)xsl + 0x228c328 + 4;
     engineRead2 = (uintptr_t)xsl + 0x228c690 + 4;
     Method m = class_getInstanceMethod([UIScrollView class], @selector(contentOffset));
     originalOffset = method_getImplementation(m);
     method_setImplementation(m, (IMP)NFBContentOffset);
+}
+
+
+// Diagnostics (temporary): a small label at the top of the screen for 30 s with what the add-on managed.
+static void NFBShowStatus(void) {
+    __block int ticks = 0;
+    __block UILabel *label = nil;
+    __block void (^tick)(void);
+    tick = ^{
+        UIWindow *window = nil;
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.isKeyWindow) window = w;
+        }
+        if (window && !label) {
+            label = [[UILabel alloc] initWithFrame:CGRectMake(8, 48, window.bounds.size.width - 16, 60)];
+            label.numberOfLines = 3;
+            label.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+            label.textColor = UIColor.whiteColor;
+            label.backgroundColor = [UIColor colorWithRed:0.8 green:0.1 blue:0.1 alpha:0.85];
+            label.userInteractionEnabled = NO;
+            label.layer.zPosition = 10000;
+            [window addSubview:label];
+        }
+        uintptr_t b = xslBase;
+        label.text = [NSString stringWithFormat:@"NFB v8 xsl=%d compose=%d ratio=%d hits=%ld calls=%ld
+callers %lx %lx %lx %lx",
+                      xslState, NSClassFromString(kComposeClass) != nil, ratioDone, engineHits, offsetCalls,
+                      lastCallers[0] ? lastCallers[0] - b : 0, lastCallers[1] ? lastCallers[1] - b : 0,
+                      lastCallers[2] ? lastCallers[2] - b : 0, lastCallers[3] ? lastCallers[3] - b : 0];
+        label.accessibilityLabel = label.text;
+        [label.superview bringSubviewToFront:label];
+        if (++ticks < 30) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), tick);
+        else { [label removeFromSuperview]; tick = nil; }
+    };
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), tick);
 }
 
 __attribute__((constructor)) static void NFBExtrasInit(void) {
@@ -253,6 +302,7 @@ __attribute__((constructor)) static void NFBExtrasInit(void) {
         NFBNoCollapseRatio();
         NFBFreezeEngineOffset();
         dispatch_async(dispatch_get_main_queue(), ^{ NFBFreezeEngineOffset(); });
+        NFBShowStatus();
         dispatch_async(dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBStopFollowing(); });
