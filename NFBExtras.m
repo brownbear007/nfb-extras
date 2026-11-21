@@ -279,40 +279,6 @@ static void NFBFreezeEngineOffset(void) {
 }
 
 
-// Diagnostics (temporary): a small label at the top of the screen for 30 s with what the add-on managed.
-static void NFBShowStatus(void) {
-    __block int ticks = 0;
-    __block UILabel *label = nil;
-    __block void (^tick)(void);
-    tick = ^{
-        UIWindow *window = nil;
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.isKeyWindow) window = w;
-        }
-        if (window && !label) {
-            label = [[UILabel alloc] initWithFrame:CGRectMake(8, 48, window.bounds.size.width - 16, 60)];
-            label.numberOfLines = 3;
-            label.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
-            label.textColor = UIColor.whiteColor;
-            label.backgroundColor = [UIColor colorWithRed:0.8 green:0.1 blue:0.1 alpha:0.85];
-            label.userInteractionEnabled = NO;
-            label.layer.zPosition = 10000;
-            [window addSubview:label];
-        }
-        uintptr_t b = xslBase;
-        label.text = [NSString stringWithFormat:@"NFB v9 xsl=%d table=%d hits=%ld/%ld calls=%ld\ncallers %lx %lx %lx %lx",
-                      xslState, originalTableOffset != NULL, engineHits, tableHits, offsetCalls,
-                      lastCallers[0] ? lastCallers[0] - b : 0, lastCallers[1] ? lastCallers[1] - b : 0,
-                      lastCallers[2] ? lastCallers[2] - b : 0, lastCallers[3] ? lastCallers[3] - b : 0];
-        label.accessibilityLabel = label.text;
-        [label.superview bringSubviewToFront:label];
-        if (++ticks < 30) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), tick);
-        else { [label removeFromSuperview]; tick = nil; }
-    };
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), tick);
-}
-
 __attribute__((constructor)) static void NFBExtrasInit(void) {
     @autoreleasepool {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hide_quick_compose"];
@@ -325,7 +291,6 @@ __attribute__((constructor)) static void NFBExtrasInit(void) {
         NFBNoCollapseRatio();
         NFBFreezeEngineOffset();
         dispatch_async(dispatch_get_main_queue(), ^{ NFBFreezeEngineOffset(); });
-        NFBShowStatus();
         dispatch_async(dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBStopFollowing(); });
