@@ -10,6 +10,7 @@
 //    keeps it expanded: every tab bar controller is set to "never" and stays there.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
@@ -279,6 +280,57 @@ static void NFBFreezeEngineOffset(void) {
 }
 
 
+
+// 9. No video playback in the background: when X leaves the screen every player it has started is
+//    paused, and while it is in the background a play (or a rate above 0) is ignored. Back in X, the
+//    video can be played again as usual.
+static NSHashTable *nfbPlayers;
+static volatile BOOL nfbInBackground = NO;
+static IMP nfbOrigPlay, nfbOrigSetRate, nfbOrigPlayAtRate;
+
+static void NFBRemember(id player) {
+    @synchronized (nfbPlayers) { [nfbPlayers addObject:player]; }
+}
+
+static void NFBPlay(AVPlayer *self, SEL _cmd) {
+    if (nfbInBackground) return;
+    NFBRemember(self);
+    ((void (*)(id, SEL))nfbOrigPlay)(self, _cmd);
+}
+
+static void NFBSetRate(AVPlayer *self, SEL _cmd, float rate) {
+    if (rate != 0 && nfbInBackground) return;
+    if (rate != 0) NFBRemember(self);
+    ((void (*)(id, SEL, float))nfbOrigSetRate)(self, _cmd, rate);
+}
+
+static void NFBPlayAtRate(AVPlayer *self, SEL _cmd, float rate) {
+    if (nfbInBackground) return;
+    NFBRemember(self);
+    ((void (*)(id, SEL, float))nfbOrigPlayAtRate)(self, _cmd, rate);
+}
+
+static void NFBNoBackgroundPlayback(void) {
+    nfbPlayers = [NSHashTable weakObjectsHashTable];
+    Class player = [AVPlayer class];
+    Method play = class_getInstanceMethod(player, @selector(play));
+    Method rate = class_getInstanceMethod(player, @selector(setRate:));
+    Method atRate = class_getInstanceMethod(player, @selector(playImmediatelyAtRate:));
+    if (play) nfbOrigPlay = method_setImplementation(play, (IMP)NFBPlay);
+    if (rate) nfbOrigSetRate = method_setImplementation(rate, (IMP)NFBSetRate);
+    if (atRate) nfbOrigPlayAtRate = method_setImplementation(atRate, (IMP)NFBPlayAtRate);
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
+        nfbInBackground = YES;
+        NSArray *all;
+        @synchronized (nfbPlayers) { all = nfbPlayers.allObjects; }
+        for (AVPlayer *p in all) [p pause];
+    }];
+    [center addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
+        nfbInBackground = NO;
+    }];
+}
+
 __attribute__((constructor)) static void NFBExtrasInit(void) {
     @autoreleasepool {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hide_quick_compose"];
@@ -290,6 +342,7 @@ __attribute__((constructor)) static void NFBExtrasInit(void) {
         NFBNoTabBarCollapse();
         NFBNoCollapseRatio();
         NFBFreezeEngineOffset();
+        NFBNoBackgroundPlayback();
         dispatch_async(dispatch_get_main_queue(), ^{ NFBFreezeEngineOffset(); });
         dispatch_async(dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
