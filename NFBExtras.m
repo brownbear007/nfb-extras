@@ -153,6 +153,38 @@ static void NFBStopFollowing(void) {
     if (any) unfollowDone = YES;
 }
 
+
+// 7. The real switch (12.39): a screen opts into the shrinking tab bar by answering YES to
+//    tfn_supportsTabBarCollapsing (the Home timeline does), and T1TabBarViewController then follows the
+//    scroll through setTabBarCollapseRatio:. Every class that answers now says NO, and the ratio stays 0.
+static BOOL NFBNo(id self, SEL _cmd) { return NO; }
+
+static void NFBNoTabBarCollapse(void) {
+    SEL supports = sel_registerName("tfn_supportsTabBarCollapsing");
+    // The only implementations in 12.39: Home (YES), TFNNavigationController (asks its screen) and the
+    // UIViewController default (NO).
+    for (NSString *name in @[@"_TtC32TwitterHomeFeatureImplementation35HomeTimelineContainerViewController",
+                             @"TFNNavigationController", @"UIViewController"]) {
+        Class cls = objc_getClass(name.UTF8String);
+        Method m = cls ? class_getInstanceMethod(cls, supports) : NULL;
+        if (m) method_setImplementation(m, (IMP)NFBNo);
+    }
+}
+
+static BOOL ratioDone = NO;
+static void NFBNoCollapseRatio(void) {
+    if (ratioDone) return;
+    Class bar = objc_getClass("T1TabBarViewController");
+    SEL set = sel_registerName("setTabBarCollapseRatio:");
+    Method m = bar ? class_getInstanceMethod(bar, set) : NULL;
+    if (!m) return;
+    ratioDone = YES;
+    IMP original = method_getImplementation(m);
+    method_setImplementation(m, imp_implementationWithBlock(^(id self, CGFloat ratio) {
+        ((void (*)(id, SEL, CGFloat))original)(self, set, 0);
+    }));
+}
+
 __attribute__((constructor)) static void NFBExtrasInit(void) {
     @autoreleasepool {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hide_quick_compose"];
@@ -161,6 +193,10 @@ __attribute__((constructor)) static void NFBExtrasInit(void) {
         NFBPinBars();
         NFBStopCollapse();
         NFBStopFollowing();
+        NFBNoTabBarCollapse();
+        NFBNoCollapseRatio();
+        dispatch_async(dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBNoTabBarCollapse(); NFBNoCollapseRatio(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ NFBStopFollowing(); });
         dispatch_async(dispatch_get_main_queue(), ^{ NFBStopCollapse(); });
         // X's frameworks may finish loading after this dylib: try again once the app is up.
