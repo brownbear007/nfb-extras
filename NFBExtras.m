@@ -200,6 +200,8 @@ static IMP originalOffset;
 static volatile long engineHits, offsetCalls;
 static uintptr_t xslBase;
 static int xslState; // 0 not loaded yet, 1 other build, 2 hooked
+static IMP originalTableOffset;
+static volatile long tableHits;
 static uintptr_t lastCallers[4];
 
 static CGPoint NFBContentOffset(UIScrollView *self, SEL _cmd) {
@@ -214,6 +216,18 @@ static CGPoint NFBContentOffset(UIScrollView *self, SEL _cmd) {
         // contentOffset readers inside XServiceLibraries, to find the engine if its sites differ.
         static int next;
         lastCallers[next++ & 3] = caller;
+    }
+    return offset;
+}
+
+// X's timelines are TFNTableViews, which override contentOffset (and call UIScrollView's): the engine's
+// read lands here first, so this is where its call site shows.
+static CGPoint NFBTableContentOffset(UIScrollView *self, SEL _cmd) {
+    CGPoint offset = ((CGPoint (*)(id, SEL))originalTableOffset)(self, _cmd);
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    if (caller == engineRead1 || caller == engineRead2) {
+        tableHits++;
+        offset.y = -self.adjustedContentInset.top;
     }
     return offset;
 }
@@ -252,6 +266,16 @@ static void NFBFreezeEngineOffset(void) {
     Method m = class_getInstanceMethod([UIScrollView class], @selector(contentOffset));
     originalOffset = method_getImplementation(m);
     method_setImplementation(m, (IMP)NFBContentOffset);
+    Class table = objc_getClass("TFNTableView");
+    Method own = NULL;
+    unsigned int n = 0;
+    Method *methods = table ? class_copyMethodList(table, &n) : NULL;
+    for (unsigned int i = 0; i < n; i++) if (method_getName(methods[i]) == @selector(contentOffset)) own = methods[i];
+    free(methods);
+    if (own) {
+        originalTableOffset = method_getImplementation(own);
+        method_setImplementation(own, (IMP)NFBTableContentOffset);
+    }
 }
 
 
@@ -277,8 +301,8 @@ static void NFBShowStatus(void) {
             [window addSubview:label];
         }
         uintptr_t b = xslBase;
-        label.text = [NSString stringWithFormat:@"NFB v8 xsl=%d compose=%d ratio=%d hits=%ld calls=%ld\ncallers %lx %lx %lx %lx",
-                      xslState, NSClassFromString(kComposeClass) != nil, ratioDone, engineHits, offsetCalls,
+        label.text = [NSString stringWithFormat:@"NFB v9 xsl=%d table=%d hits=%ld/%ld calls=%ld\ncallers %lx %lx %lx %lx",
+                      xslState, originalTableOffset != NULL, engineHits, tableHits, offsetCalls,
                       lastCallers[0] ? lastCallers[0] - b : 0, lastCallers[1] ? lastCallers[1] - b : 0,
                       lastCallers[2] ? lastCallers[2] - b : 0, lastCallers[3] ? lastCallers[3] - b : 0];
         label.accessibilityLabel = label.text;
